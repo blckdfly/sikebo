@@ -7,36 +7,7 @@ const API_CONFIG = {
     "https://sikebo-node1.binusbcc.org/",
     "https://sikebo-node2.binusbcc.org/",
     "https://sikebo-node3.binusbcc.org/"
-  ],
-  timeout: 5000,
-  retries: 2
-};
-
-const api = axios.create({
-  timeout: API_CONFIG.timeout,
-  headers: {
-    'Content-Type': 'application/json'
-  }
-});
-
-const retryRequest = async (fn, retries = API_CONFIG.retries) => {
-  for (let i = 0; i < retries; i++) {
-    try {
-      return await fn();
-    } catch (error) {
-      if (i === retries - 1) throw error;
-      
-      const currentEndpoint = error.config.url;
-      const currentIndex = API_CONFIG.endpoints.indexOf(new URL(currentEndpoint).origin + '/');
-      const nextIndex = (currentIndex + 1) % API_CONFIG.endpoints.length;
-      error.config.url = error.config.url.replace(
-        API_CONFIG.endpoints[currentIndex],
-        API_CONFIG.endpoints[nextIndex]
-      );
-      
-      await new Promise(resolve => setTimeout(resolve, Math.pow(2, i) * 1000));
-    }
-  }
+  ]
 };
 
 const Card = ({ children, className }) => (
@@ -64,15 +35,78 @@ const Dashboard = () => {
   const [errorMessage, setErrorMessage] = useState("");
   const [filterType, setFilterType] = useState("all");
   const [miningStatus] = useState("");
-  const [setIsLoading] = useState(false);
+  const [isLoading, setIsLoading] = useState(false);  // Proper useState dengan getter dan setter
+
   const [currentEndpointIndex, setCurrentEndpointIndex] = useState(0);
 
+  const testData = [
+    {
+      index: 1,
+      timestamp: "2024-12-23T00:00:00",
+      nonce: 12345,
+      hash: "abcdef123456",
+      previousBlockHash: "xyz123",
+      merkleRoot: "roothash123",
+      transactions: [
+        {
+          employeeId: "EMP001",
+          transactionId: "TX12345"
+        }
+      ]
+    }
+  ];
+
+  const transformData = (apiData) => {
+    const { chain, pendingTransactions } = apiData;
+  
+    // Transform chain blocks
+    const transformedBlocks = chain.map((block) => {
+      const transactions = pendingTransactions.map((tx) => ({
+        employeeId: tx.userID, // Map userID ke employeeId
+        transactionId: tx.transactionID, // Ambil transactionID
+      }));
+  
+      return {
+        index: block.index,
+        timestamp: new Date(block.timestamp).toLocaleString(), // Convert timestamp
+        nonce: block.nonce,
+        hash: block.hash,
+        previousBlockHash: block.previousBlockHash,
+        merkleRoot: block.merkleRoot || "N/A", // Jika tidak ada merkleRoot, tampilkan "N/A"
+        transactions, // Masukkan transaksi
+      };
+    });
+  
+    return transformedBlocks;
+  };
+  
+  
+  // useEffect(() => {
+  //   setSearchResults(testData);
+  // }, []);
+
   useEffect(() => {
-    const interval = setInterval(() => {
-      setTime(new Date());
-    }, 1000);
-    return () => clearInterval(interval);
+    const timer = setInterval(() => setTime(new Date()), 1000);
+    return () => clearInterval(timer);
   }, []);
+
+  useEffect(() => {
+    const fetchData = async () => {
+      try {
+        const response = await fetch('https://sikebo-node1.binusbcc.org/blockchain');
+        const data = await response.json();
+        setBlocks(data);
+        if (data.chain) {
+          setSearchResults(transformData(data));
+        }
+      } catch (error) {
+        console.error('Error:', error);
+      }
+    };
+  
+    fetchData();
+  }, []);
+
 
   const formattedTime = time.toLocaleTimeString("en-US", {
     hour: "2-digit",
@@ -86,86 +120,117 @@ const Dashboard = () => {
     year: "numeric"
   });
 
+  const retryRequest = async (fn, retries = 3, delay = 1000) => {
+    try {
+      return await fn();
+    } catch (error) {
+      if (retries === 0) throw error;
+      await new Promise((res) => setTimeout(res, delay));
+      return retryRequest(fn, retries - 1, delay);
+    }
+  };
+
   const handleClockIn = async () => {
     if (!employeeId) {
       setErrorMessage("Please enter your Employee ID");
       return;
     }
-
+  
     const today = new Date().toDateString();
-    const alreadyClockedIn = blocks.some(block => 
-      block.transactions[0].employeeId === employeeId && 
+    const blockchainData = blocks?.chain || [];
+    
+    const alreadyClockedIn = blockchainData.some(block => 
+      block?.transactions?.[0]?.userID === employeeId && 
       new Date(block.timestamp).toDateString() === today
     );
-
+  
     if (alreadyClockedIn) {
-      setErrorMessage("You have already clocked in today");
+      setErrorMessage("Already clocked in today");
       return;
     }
-
+  
     setIsLoading(true);
     setErrorMessage("");
-
+  
     try {
-      const response = await retryRequest(async () => {
-        const endpoint = API_CONFIG.endpoints[currentEndpointIndex];
-        const result = await api.post(`${endpoint}clock-in`, {
-          employeeId,
-          timestamp: new Date().toISOString(),
-          type: "Clock In"
-        });
-        return result;
+      const endpoint = API_CONFIG.endpoints[currentEndpointIndex];
+      const response = await axios.post(`${endpoint}transaction/broadcast`, {
+        userID: employeeId,
+        status: "Clock In"
       });
-
-      const newBlock = response.data;
-      setBlocks([...blocks, newBlock]);
-      setEmployeeId("");
-      setErrorMessage("");
+  
+      // Fetch updated blockchain data
+      const updatedData = await axios.get(`${endpoint}blockchain`);
+      setBlocks(updatedData.data);
+      setSearchResults(transformData(updatedData.data));
       
-      // Update to next endpoint for load balancing
+      setEmployeeId("");
       setCurrentEndpointIndex((currentEndpointIndex + 1) % API_CONFIG.endpoints.length);
     } catch (error) {
-      let errorMsg = "An error occurred while clocking in. ";
-      
-      if (error.code === "ECONNABORTED") {
-        errorMsg += "Request timed out. Please try again.";
-      } else if (!navigator.onLine) {
-        errorMsg += "Please check your internet connection.";
-      } else if (error.response) {
-        // Server responded with error
-        errorMsg += error.response.data.message || "Server error occurred.";
-      } else if (error.request) {
-        // Request made but no response
-        errorMsg += "Could not reach the server. Please try again later.";
-      } else {
-        errorMsg += "Please try again or contact support if the problem persists.";
-      }
-      
-      setErrorMessage(errorMsg);
+      setErrorMessage(error.response?.data?.message || "Clock in failed");
     } finally {
       setIsLoading(false);
     }
   };
 
-const handleSearch = async (e) => {
-  e.preventDefault();
-  
-  try {
-      let results;
-      
-      if (filterType === "id" && searchId) {
-          results = await axios.get(`${API_CONFIG[0]}search`, {
-              params: { employeeId: searchId }
-          });
-      } else {
-          results = await axios.get(`${API_CONFIG[0]}all-blocks`);
-      }
+  // const handleSearch = async (e) => {
+  //   e.preventDefault();
+  //   setIsLoading(true);
+  //   setErrorMessage("");
 
-      setSearchResults(results.data);
-  } catch (error) {
-      setErrorMessage("Error fetching blocks: " + error.message);
-  }
-};
+  //   try {
+  //     const endpoint = API_CONFIG.endpoints[currentEndpointIndex];
+  //     const url = filterType === "id" && searchId
+  //       ? `${endpoint}transaction/${searchId}`
+  //       : `${endpoint}blockchain`;
+
+  //     console.log("Fetching URL:", url); // Tambahkan ini untuk debug
+
+  //     const results = await axios.get(url);
+
+  //     console.log('Status:', results.status); // Cek status
+  //     if (results.status === 200) {
+  //       setSearchResults(results.data);
+  //     } else {
+  //       setErrorMessage("Failed to fetch data.");
+  //     }
+
+  //     console.log('Results:', results.data); // Cek data yang datang
+
+  //     setSearchResults(results.data);
+  //   } catch (error) {
+  //     setErrorMessage("Error fetching blocks: " + error.message);
+  //   } finally {
+  //     setIsLoading(false);
+  //   }
+  // };
+
+  const handleSearch = async (e) => {
+    e.preventDefault();
+    setIsLoading(true);
+    setErrorMessage("");
+  
+    try {
+      const endpoint = API_CONFIG.endpoints[currentEndpointIndex];
+      const url = filterType === "id" && searchId
+        ? `${endpoint}transaction/${searchId}`
+        : `${endpoint}blockchain`;
+  
+      console.log("Fetching URL:", url); // Debug log
+  
+      const response = await axios.get(url);
+      const transformedData = transformData(response.data); // Transform data
+      console.log("Transformed Data:", transformedData); // Debug log untuk cek hasil transformasi
+  
+      setSearchResults(transformedData); // Set data ke state
+    } catch (err) {
+      console.error("Error fetching data:", err);
+      setErrorMessage("Failed to fetch data");
+    } finally {
+      setIsLoading(false);
+    }
+  };
+  
 
   return (
     <div className="min-h-screen bg-gray-50 p-8">
@@ -174,7 +239,7 @@ const handleSearch = async (e) => {
           <CardContent className="p-8">
             <h2 className="text-lg font-medium">Hi👋</h2>
             <h1 className="text-4xl font-bold mb-8">Lets go to Work!</h1>
-            
+
             <div className="mb-8">
               <h1 className="text-6xl font-bold">{formattedTime}</h1>
               <p className="text-xl mt-2">{formattedDate}</p>
@@ -194,7 +259,7 @@ const handleSearch = async (e) => {
               {miningStatus && (
                 <div className="text-lime-300 text-sm">{miningStatus}</div>
               )}
-              <button 
+              <button
                 onClick={handleClockIn}
                 className="w-full bg-lime-400 text-emerald-900 p-4 rounded-lg flex items-center justify-center space-x-2 font-medium hover:bg-lime-300 transition-colors"
               >
@@ -209,7 +274,7 @@ const handleSearch = async (e) => {
           <CardContent className="p-8">
             <h3 className="text-2xl font-bold mb-2">Attendance</h3>
             <p className="text-lg mb-6">December</p>
-            
+
             <div className="grid grid-cols-2 gap-4">
               <div className="bg-indigo-100 p-4 rounded-lg text-indigo-900">
                 <span className="text-3xl font-bold block">13</span>
@@ -276,7 +341,7 @@ const handleSearch = async (e) => {
                   placeholder="Enter Employee ID"
                 />
               )}
-              <button 
+              <button
                 type="submit"
                 className="px-6 py-3 bg-emerald-800 text-white rounded-lg hover:bg-emerald-700"
               >
@@ -309,6 +374,7 @@ const handleSearch = async (e) => {
                       </tr>
                     </thead>
                     <tbody className="divide-y">
+                      
                       {searchResults.map((block) => (
                         <tr key={block.index}>
                           <td className="p-4">{block.index}</td>
