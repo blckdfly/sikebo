@@ -1,0 +1,26 @@
+{
+  "name": "sikebo-api",
+  "version": "1.0.0",
+  "description": "Sistem Kehadiran Berbasis Blockchain",
+  "main": "network/app.js",
+  "scripts": {
+    "start": "node network/app.js"
+  },
+  "keywords": [
+    "attendance",
+    "blockchain",
+    "sikebo"
+  ],
+  "author": "Adzin Zhalifunnas, Dylan Goliat, Irfan Hera Nurrohman, Naufal Ziyaadaturrahman, Raymond Willen Kristopo",
+  "license": "ISC",
+  "dependencies": {
+    "cors": "^2.8.5",
+    "express": "^4.21.2",
+    "js-sha3": "^0.8.0",
+    "nodemon": "^3.1.9",
+    "request-promise": "^4.2.6"
+  },
+  "devDependencies": {
+    "@types/uuid": "^10.0.0"
+  }
+}
